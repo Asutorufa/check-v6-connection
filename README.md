@@ -12,6 +12,15 @@ restrict,command="/usr/local/sbin/ipv6-watch-ssh-command" ssh-ed25519 AAAA...
 
 For Dropbear, use the supported equivalent `command="..."` restriction and verify that forwarding and interactive shell access are disabled by the deployed version.
 
+When the Telegram polling loop starts, the bot registers these commands with Telegram:
+
+```text
+/status   获取 OpenWrt IPv6 当前状态，并通过 SSH 执行一次远端 probe
+/recover  通过 SSH 在 OpenWrt 执行 recover，等待后再次执行远端 probe
+```
+
+Both commands require a configured `allowed_user_ids` user and the configured `chat_id`. `/status` reports the remote exit code, duration, and stderr when the OpenWrt probe fails.
+
 ## Linux deployment
 
 The repository includes a systemd unit at [`systemd/openwrt-ipv6-watch.service`](systemd/openwrt-ipv6-watch.service).

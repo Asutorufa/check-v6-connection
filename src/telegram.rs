@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::{
     client::OpenWrtClient,
-    monitor::{Monitor, RecoveryOutcome},
+    monitor::{Monitor, MonitorEvent, RecoveryOutcome},
 };
 
 #[derive(Debug, Error)]
@@ -62,6 +62,7 @@ impl TelegramBot {
     where
         C: OpenWrtClient + 'static,
     {
+        self.register_commands().await?;
         let mut offset: i64 = 0;
         loop {
             let updates: Vec<Update> = self
@@ -89,14 +90,10 @@ impl TelegramBot {
     where
         C: OpenWrtClient + 'static,
     {
-        let (user_id, recover_requested, chat_allowed) = if let Some(message) = &update.message {
+        let (user_id, action, chat_allowed) = if let Some(message) = &update.message {
             (
                 message.from.as_ref().map(|u| u.id),
-                message
-                    .text
-                    .as_deref()
-                    .map(is_recover_command)
-                    .unwrap_or(false),
+                message.text.as_deref().and_then(parse_command),
                 message.chat.id == self.chat_id,
             )
         } else if let Some(callback) = &update.callback_query {
@@ -105,8 +102,8 @@ impl TelegramBot {
                 callback
                     .data
                     .as_deref()
-                    .map(is_recover_confirmation)
-                    .unwrap_or(false),
+                    .filter(|data| is_recover_confirmation(data))
+                    .map(|_| BotAction::Recover),
                 callback
                     .message
                     .as_ref()
@@ -116,7 +113,7 @@ impl TelegramBot {
             return Ok(());
         };
 
-        if !chat_allowed || !recover_requested || !user_id.is_some_and(|id| self.is_allowed(id)) {
+        if !chat_allowed || action.is_none() || !user_id.is_some_and(|id| self.is_allowed(id)) {
             warn!(
                 ?user_id,
                 "ignored unauthorized or unsupported Telegram input"
@@ -124,7 +121,85 @@ impl TelegramBot {
             return Ok(());
         }
 
-        info!("authorized Telegram recovery request accepted");
+        match action.expect("checked above") {
+            BotAction::Status => {
+                info!("authorized Telegram status request accepted");
+                self.send_status(monitor).await?;
+            }
+            BotAction::Recover => {
+                info!("authorized Telegram recovery request accepted");
+                self.send_recovery_result(monitor).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn register_commands(&self) -> Result<(), TelegramError> {
+        #[derive(Serialize)]
+        struct BotCommand<'a> {
+            command: &'a str,
+            description: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Request<'a> {
+            commands: [BotCommand<'a>; 2],
+        }
+        self.call::<serde_json::Value, _>(
+            "setMyCommands",
+            &Request {
+                commands: [
+                    BotCommand {
+                        command: "status",
+                        description: "获取 OpenWrt IPv6 当前状态",
+                    },
+                    BotCommand {
+                        command: "recover",
+                        description: "恢复 OpenWrt WAN6 并重新检测",
+                    },
+                ],
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn send_status<C>(&self, monitor: &Arc<Monitor<C>>) -> Result<(), TelegramError>
+    where
+        C: OpenWrtClient + 'static,
+    {
+        let text = match monitor.tick().await {
+            MonitorEvent::Healthy(probe) => format!(
+                "OpenWrt IPv6 状态：正常\n检测位置：OpenWrt 远端\n命令：probe\n退出码：{:?}\n耗时：{} ms",
+                probe.exit_code,
+                probe.duration.as_millis()
+            ),
+            MonitorEvent::Failed {
+                consecutive_failures,
+                error,
+                probe,
+            } => {
+                let (exit_code, duration, stderr) = probe
+                    .map(|probe| {
+                        (
+                            format!("{:?}", probe.exit_code),
+                            format!("{} ms", probe.duration.as_millis()),
+                            probe.stderr,
+                        )
+                    })
+                    .unwrap_or_else(|| ("N/A".into(), "N/A".into(), String::new()));
+                let detail = error.unwrap_or(stderr);
+                format!(
+                    "OpenWrt IPv6 状态：失败\n检测位置：OpenWrt 远端\n命令：probe\n退出码：{exit_code}\n耗时：{duration}\n连续失败：{consecutive_failures}\n错误：{detail}"
+                )
+            }
+        };
+        self.send_message(&text).await
+    }
+
+    async fn send_recovery_result<C>(&self, monitor: &Arc<Monitor<C>>) -> Result<(), TelegramError>
+    where
+        C: OpenWrtClient + 'static,
+    {
         match monitor.recover_and_probe().await {
             RecoveryOutcome::Recovered { probe } => {
                 self.send_message(&format!(
@@ -175,6 +250,26 @@ impl TelegramBot {
 
 pub fn is_recover_command(text: &str) -> bool {
     text.trim() == "/recover"
+}
+
+pub fn is_status_command(text: &str) -> bool {
+    text.trim() == "/status"
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BotAction {
+    Status,
+    Recover,
+}
+
+fn parse_command(text: &str) -> Option<BotAction> {
+    if is_status_command(text) {
+        Some(BotAction::Status)
+    } else if is_recover_command(text) {
+        Some(BotAction::Recover)
+    } else {
+        None
+    }
 }
 
 pub fn is_recover_confirmation(data: &str) -> bool {
@@ -239,6 +334,15 @@ mod tests {
         assert!(!is_recover_command("/recover example.com"));
         assert!(!is_recover_command("/recover; ifup wan6"));
         assert!(!is_recover_command("/bin/sh"));
+    }
+
+    #[test]
+    fn only_exact_status_command_is_accepted() {
+        assert!(is_status_command("/status"));
+        assert!(is_status_command("  /status  "));
+        assert!(!is_status_command("/status example.com"));
+        assert!(!is_status_command("/status; id"));
+        assert!(!is_status_command("status"));
     }
 
     #[test]

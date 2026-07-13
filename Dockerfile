@@ -3,6 +3,7 @@ FROM rust:1-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY openwrt ./openwrt
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim

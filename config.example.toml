@@ -1,0 +1,28 @@
+[monitor]
+interval_seconds = 30
+failure_threshold = 3
+recovery_success_threshold = 2
+recovery_wait_seconds = 10
+reminder_interval_seconds = 1800
+incident_expire_seconds = 3600
+
+[telegram]
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+chat_id = -1001234567890
+allowed_user_ids = [123456789]
+
+[openwrt]
+host = "192.168.1.1"
+port = 22
+username = "root"
+# Key authentication (recommended):
+private_key = "/etc/openwrt-ipv6-watch/id_ed25519"
+# Password authentication alternative. The password is read from this
+# environment variable and is never stored in this TOML file or image.
+# password_env = "OPENWRT_SSH_PASSWORD"
+install_wrapper_on_startup = true
+known_hosts = "/etc/openwrt-ipv6-watch/known_hosts"
+connect_timeout_seconds = 10
+command_timeout_seconds = 10
+probe_remote_command = "probe"
+recover_remote_command = "recover"

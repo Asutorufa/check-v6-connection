@@ -1,0 +1,16 @@
+#!/bin/sh
+
+case "$SSH_ORIGINAL_COMMAND" in
+  "probe")
+    exec ping6 -c 1 -W 3 openwrt.org
+    ;;
+
+  "recover")
+    exec ifup wan6
+    ;;
+
+  *)
+    logger -t ipv6-watch-ssh "Rejected SSH command"
+    exit 126
+    ;;
+esac

@@ -1,0 +1,7 @@
+.git
+.github
+target
+.dockerignore
+Dockerfile
+README.md
+systemd

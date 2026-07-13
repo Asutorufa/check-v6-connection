@@ -1,0 +1,26 @@
+[Unit]
+Description=OpenWrt IPv6 connectivity watcher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ipv6-watch
+Group=ipv6-watch
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/openwrt-ipv6-watch/telegram.env
+ExecStart=/usr/local/bin/openwrt-ipv6-watch /etc/openwrt-ipv6-watch/config.toml
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

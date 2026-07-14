@@ -290,6 +290,13 @@ mod tests {
     }
 
     #[test]
+    fn bundled_wrapper_probes_from_the_lan_bridge() {
+        assert!(WRAPPER_SCRIPT.contains("ip -6 -o addr show dev br-lan scope global"));
+        assert!(WRAPPER_SCRIPT.contains("ping6 -I \"$lan_source\" -c 1 -W 3 openwrt.org"));
+        assert!(!WRAPPER_SCRIPT.contains("ping6 -I br-lan -c 1 -W 3 openwrt.org"));
+    }
+
+    #[test]
     fn password_mode_uses_only_fixed_wrapper_invocations() {
         let mut openwrt = config(10);
         openwrt.password_env = Some("OPENWRT_IPV6_WATCH_TEST_PASSWORD".into());

@@ -2,7 +2,7 @@
 
 This service runs on a remote Linux host and performs IPv6 checks only through SSH on OpenWrt.
 
-The local process never starts `ping6` or `ifup wan6`. On startup, it can use the system `ssh` executable to write the fixed OpenWrt wrapper through SSH stdin; it does not use `scp`. After provisioning, it sends only the fixed remote commands `probe` and `recover`. The OpenWrt wrapper maps those commands to the actual operations.
+The local process never starts `ping6` or `ifup wan6`. On startup, it can use the system `ssh` executable to write the fixed OpenWrt wrapper through SSH stdin; it does not use `scp`. After provisioning, it sends only the fixed remote commands `probe` and `recover`. The OpenWrt wrapper selects the current non-deprecated global IPv6 address on `br-lan` as the ping source, while leaving route selection to the system so the packet can still leave through WAN.
 
 When `install_wrapper_on_startup = true`, the program writes `/usr/local/sbin/ipv6-watch-ssh-command` through SSH and applies mode `0755` automatically. The startup SSH account must temporarily be able to execute the fixed remote installation command. A key already restricted with `command="..."` cannot perform this bootstrap step; after installing the wrapper, set `install_wrapper_on_startup = false` and use the restricted key:
 

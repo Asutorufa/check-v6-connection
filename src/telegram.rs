@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -62,10 +62,27 @@ impl TelegramBot {
     where
         C: OpenWrtClient + 'static,
     {
-        self.register_commands().await?;
         let mut offset: i64 = 0;
+        let mut commands_registered = false;
+        let mut retry_delay = Duration::from_secs(1);
         loop {
-            let updates: Vec<Update> = self
+            if !commands_registered {
+                match self.register_commands().await {
+                    Ok(()) => {
+                        commands_registered = true;
+                        retry_delay = Duration::from_secs(1);
+                        info!("Telegram bot commands registered");
+                    }
+                    Err(error) => {
+                        warn!(%error, ?retry_delay, "Telegram command registration failed; retrying");
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = next_retry_delay(retry_delay);
+                        continue;
+                    }
+                }
+            }
+
+            let updates: Vec<Update> = match self
                 .call(
                     "getUpdates",
                     &GetUpdates {
@@ -74,10 +91,25 @@ impl TelegramBot {
                         allowed_updates: ["message", "callback_query"],
                     },
                 )
-                .await?;
+                .await
+            {
+                Ok(updates) => {
+                    retry_delay = Duration::from_secs(1);
+                    updates
+                }
+                Err(error) => {
+                    commands_registered = false;
+                    warn!(%error, ?retry_delay, "Telegram polling failed; reconnecting");
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = next_retry_delay(retry_delay);
+                    continue;
+                }
+            };
             for update in updates {
                 offset = update.update_id + 1;
-                self.handle_update(&monitor, &update).await?;
+                if let Err(error) = self.handle_update(&monitor, &update).await {
+                    warn!(%error, "Telegram update handling failed; continuing polling");
+                }
             }
         }
     }
@@ -246,6 +278,10 @@ impl TelegramBot {
             ))
         }
     }
+}
+
+fn next_retry_delay(current: Duration) -> Duration {
+    std::cmp::min(current + current, Duration::from_secs(60))
 }
 
 pub fn is_recover_command(text: &str) -> bool {

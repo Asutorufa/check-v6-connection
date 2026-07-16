@@ -63,7 +63,7 @@ sudo chown root:root /etc/openwrt-ipv6-watch/telegram.env
 sudo chmod 0600 /etc/openwrt-ipv6-watch/telegram.env
 ```
 
-Edit `/etc/openwrt-ipv6-watch/config.toml`, especially `host`, `chat_id`, `allowed_user_ids`, SSH key paths, and the fixed command values `probe`/`recover`.
+Edit `/etc/openwrt-ipv6-watch/config.toml`, especially `host`, `chat_id`, `allowed_user_ids`, SSH key paths, and the fixed command values `probe`/`recover`. Telegram uses an explicit 10-second connection timeout and a 35-second HTTP request timeout around the default 20-second long poll. Keep `request_timeout_seconds` greater than `poll_timeout_seconds`.
 
 Install and start the unit:
 

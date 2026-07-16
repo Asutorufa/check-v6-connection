@@ -71,11 +71,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::select! {
         result = monitor_task => {
-            if let Err(error) = result { error!(%error, "monitor task stopped"); }
+            match result {
+                Ok(()) => Err("monitor task stopped unexpectedly".into()),
+                Err(error) => {
+                    error!(%error, "monitor task stopped");
+                    Err(format!("monitor task stopped: {error}").into())
+                }
+            }
         }
         result = telegram_task => {
-            if let Err(error) = result { error!(%error, "Telegram task stopped"); }
+            match result {
+                Ok(Ok(())) => Err("Telegram task stopped unexpectedly".into()),
+                Ok(Err(error)) => {
+                    error!(%error, "Telegram task stopped");
+                    Err(format!("Telegram task stopped: {error}").into())
+                }
+                Err(error) => {
+                    error!(%error, "Telegram task stopped");
+                    Err(format!("Telegram task stopped: {error}").into())
+                }
+            }
         }
     }
-    Ok(())
 }

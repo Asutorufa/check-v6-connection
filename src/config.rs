@@ -28,6 +28,12 @@ pub struct TelegramConfig {
     pub bot_token_env: String,
     pub chat_id: i64,
     pub allowed_user_ids: Vec<i64>,
+    #[serde(default = "default_telegram_connect_timeout_seconds")]
+    pub connect_timeout_seconds: u64,
+    #[serde(default = "default_telegram_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_telegram_poll_timeout_seconds")]
+    pub poll_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +71,18 @@ fn default_recover_command() -> String {
 
 fn default_install_wrapper_on_startup() -> bool {
     true
+}
+
+fn default_telegram_connect_timeout_seconds() -> u64 {
+    10
+}
+
+fn default_telegram_request_timeout_seconds() -> u64 {
+    35
+}
+
+fn default_telegram_poll_timeout_seconds() -> u64 {
+    20
 }
 
 #[derive(Debug, Error)]
@@ -140,6 +158,19 @@ impl Config {
                 "telegram bot_token_env is required".into(),
             ));
         }
+        if self.telegram.connect_timeout_seconds == 0
+            || self.telegram.request_timeout_seconds == 0
+            || self.telegram.poll_timeout_seconds == 0
+        {
+            return Err(ConfigError::Invalid(
+                "Telegram timeouts must be greater than zero".into(),
+            ));
+        }
+        if self.telegram.request_timeout_seconds <= self.telegram.poll_timeout_seconds {
+            return Err(ConfigError::Invalid(
+                "Telegram request timeout must be longer than the long-poll timeout".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -182,6 +213,22 @@ mod tests {
     fn rejects_modified_remote_commands() {
         let mut c = config();
         c.openwrt.probe_remote_command = "probe; id".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn telegram_timeout_defaults_leave_room_for_long_polling() {
+        let c = config();
+        assert_eq!(c.telegram.connect_timeout_seconds, 10);
+        assert_eq!(c.telegram.poll_timeout_seconds, 20);
+        assert_eq!(c.telegram.request_timeout_seconds, 35);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_telegram_request_timeout_not_longer_than_poll_timeout() {
+        let mut c = config();
+        c.telegram.request_timeout_seconds = c.telegram.poll_timeout_seconds;
         assert!(c.validate().is_err());
     }
 }

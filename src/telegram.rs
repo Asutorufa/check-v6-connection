@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::{
@@ -12,6 +13,10 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum TelegramError {
+    #[error("Telegram bot token environment variable is unavailable: {0}")]
+    TokenEnvironment(#[from] std::env::VarError),
+    #[error("failed to build Telegram HTTP client: {0}")]
+    HttpClient(#[source] reqwest::Error),
     #[error("Telegram request failed: {0}")]
     Request(#[from] reqwest::Error),
     #[error("Telegram API returned an error: {0}")]
@@ -24,16 +29,31 @@ pub struct TelegramBot {
     token: String,
     chat_id: i64,
     allowed_user_ids: Arc<[i64]>,
+    poll_timeout_seconds: u64,
+    command_slots: Arc<Semaphore>,
 }
 
 impl TelegramBot {
-    pub fn from_env(config: &crate::config::TelegramConfig) -> Result<Self, std::env::VarError> {
+    pub fn from_env(config: &crate::config::TelegramConfig) -> Result<Self, TelegramError> {
         let token = std::env::var(&config.bot_token_env)?;
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(config.connect_timeout_seconds))
+            // Telegram's long-poll timeout is 20 seconds by default. Keep a
+            // margin here so a normal empty poll can complete before the
+            // client gives up, while still bounding half-open connections.
+            .timeout(Duration::from_secs(config.request_timeout_seconds))
+            .build()
+            .map_err(TelegramError::HttpClient)?;
         Ok(Self {
-            http: Client::new(),
+            http,
             token,
             chat_id: config.chat_id,
             allowed_user_ids: config.allowed_user_ids.clone().into(),
+            poll_timeout_seconds: config.poll_timeout_seconds,
+            // Keep polling responsive even while SSH/recovery work is in
+            // progress. The limit bounds the number of command handlers that
+            // can actively use the monitor and OpenWrt connection at once.
+            command_slots: Arc::new(Semaphore::new(8)),
         })
     }
 
@@ -87,7 +107,7 @@ impl TelegramBot {
                     "getUpdates",
                     &GetUpdates {
                         offset,
-                        timeout: 20,
+                        timeout: self.poll_timeout_seconds,
                         allowed_updates: ["message", "callback_query"],
                     },
                 )
@@ -107,9 +127,18 @@ impl TelegramBot {
             };
             for update in updates {
                 offset = update.update_id + 1;
-                if let Err(error) = self.handle_update(&monitor, &update).await {
-                    warn!(%error, "Telegram update handling failed; continuing polling");
-                }
+                let bot = self.clone();
+                let monitor = Arc::clone(&monitor);
+                let command_slots = Arc::clone(&self.command_slots);
+                tokio::spawn(async move {
+                    let Ok(_permit) = command_slots.acquire_owned().await else {
+                        return;
+                    };
+                    let update_id = update.update_id;
+                    if let Err(error) = bot.handle_update(&monitor, &update).await {
+                        warn!(update_id, %error, "Telegram update handling failed; continuing polling");
+                    }
+                });
             }
         }
     }
@@ -285,11 +314,29 @@ fn next_retry_delay(current: Duration) -> Duration {
 }
 
 pub fn is_recover_command(text: &str) -> bool {
-    text.trim() == "/recover"
+    is_command(text, "recover")
 }
 
 pub fn is_status_command(text: &str) -> bool {
-    text.trim() == "/status"
+    is_command(text, "status")
+}
+
+fn is_command(text: &str, expected: &str) -> bool {
+    let mut parts = text.split_whitespace();
+    let Some(command) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+
+    let Some(command) = command.strip_prefix('/') else {
+        return false;
+    };
+    match command.split_once('@') {
+        Some((name, username)) => name == expected && !username.is_empty(),
+        None => command == expected,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -364,19 +411,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_exact_recover_command_is_accepted() {
+    fn recover_command_accepts_telegram_bot_mentions_but_not_arguments() {
         assert!(is_recover_command("/recover"));
         assert!(is_recover_command("  /recover  "));
+        assert!(is_recover_command("/recover@watch_bot"));
         assert!(!is_recover_command("/recover example.com"));
+        assert!(!is_recover_command("/recover@"));
         assert!(!is_recover_command("/recover; ifup wan6"));
         assert!(!is_recover_command("/bin/sh"));
     }
 
     #[test]
-    fn only_exact_status_command_is_accepted() {
+    fn status_command_accepts_telegram_bot_mentions_but_not_arguments() {
         assert!(is_status_command("/status"));
         assert!(is_status_command("  /status  "));
+        assert!(is_status_command("/status@watch_bot"));
         assert!(!is_status_command("/status example.com"));
+        assert!(!is_status_command("/status@"));
         assert!(!is_status_command("/status; id"));
         assert!(!is_status_command("status"));
     }

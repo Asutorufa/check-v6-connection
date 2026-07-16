@@ -10,6 +10,10 @@ incident_expire_seconds = 3600
 bot_token_env = "TELEGRAM_BOT_TOKEN"
 chat_id = -1001234567890
 allowed_user_ids = [123456789]
+# The HTTP timeout must be longer than the long-poll timeout.
+connect_timeout_seconds = 10
+request_timeout_seconds = 35
+poll_timeout_seconds = 20
 
 [openwrt]
 host = "192.168.1.1"

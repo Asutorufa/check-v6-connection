@@ -17,8 +17,8 @@ For Dropbear, use the supported equivalent `command="..."` restriction and verif
 When the Telegram polling loop starts, the bot registers these commands with Telegram:
 
 ```text
-/status   获取本地指定网口的 IPv6 状态，并执行一次本地 DNS + IPv6 ping
-/recover  通过 SSH 在 OpenWrt 执行 recover，等待后再次执行本地检测
+/status   Check IPv6 status through the configured local interface
+/recover  Run the fixed WAN6 recovery command on OpenWrt, then check locally
 ```
 
 Both commands require a configured `allowed_user_ids` user and the configured `chat_id`. `/status` reports the local ping exit code, duration, and stderr when the probe fails. The monitor sends a failure notification after `failure_threshold` consecutive failures, repeats it at `reminder_interval_seconds`, and sends a recovery notification after `recovery_success_threshold` consecutive successes.

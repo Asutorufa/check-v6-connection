@@ -14,7 +14,7 @@ fn failure_detail(error: Option<&String>, probe: Option<&ProbeResult>) -> String
         .map(String::as_str)
         .or_else(|| probe.map(|probe| probe.stderr.trim()))
         .filter(|detail| !detail.is_empty())
-        .unwrap_or("无详细错误");
+        .unwrap_or("no detailed error");
     detail.chars().take(1000).collect()
 }
 
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             && consecutive_successes >= monitor.recovery_success_threshold()
                         {
                             let message = format!(
-                                "本地 IPv6 已恢复。连续成功：{consecutive_successes}，退出码：{:?}。",
+                                "Local IPv6 connectivity recovered. Consecutive successes: {consecutive_successes}, exit code: {:?}.",
                                 probe.exit_code
                             );
                             match bot.send_message(&message).await {
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             && (!incident_active || reminder_due)
                         {
                             let message = format!(
-                                "本地 IPv6 检测失败。连续失败：{consecutive_failures}\n错误：{}",
+                                "Local IPv6 connectivity check failed. Consecutive failures: {consecutive_failures}\nError: {}",
                                 failure_detail(error.as_ref(), probe.as_ref())
                             );
                             match bot.send_message(&message).await {

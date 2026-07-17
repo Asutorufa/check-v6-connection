@@ -211,11 +211,11 @@ impl TelegramBot {
                 commands: [
                     BotCommand {
                         command: "status",
-                        description: "获取 OpenWrt IPv6 当前状态",
+                        description: "Check local IPv6 status",
                     },
                     BotCommand {
                         command: "recover",
-                        description: "恢复 OpenWrt WAN6 并重新检测",
+                        description: "Recover OpenWrt WAN6 and check again",
                     },
                 ],
             },
@@ -230,7 +230,7 @@ impl TelegramBot {
     {
         let text = match monitor.tick().await {
             MonitorEvent::Healthy { probe, .. } => format!(
-                "本地 IPv6 状态：正常\n检测位置：Linux 指定网口\n命令：本地 DNS + ping6（不存在时使用 ping -6）\n退出码：{:?}\n耗时：{} ms",
+                "Local IPv6 status: healthy\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nExit code: {:?}\nDuration: {} ms",
                 probe.exit_code,
                 probe.duration.as_millis()
             ),
@@ -250,7 +250,7 @@ impl TelegramBot {
                     .unwrap_or_else(|| ("N/A".into(), "N/A".into(), String::new()));
                 let detail = error.unwrap_or(stderr);
                 format!(
-                    "本地 IPv6 状态：失败\n检测位置：Linux 指定网口\n命令：本地 DNS + ping6（不存在时使用 ping -6）\n退出码：{exit_code}\n耗时：{duration}\n连续失败：{consecutive_failures}\n错误：{detail}"
+                    "Local IPv6 status: failed\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nExit code: {exit_code}\nDuration: {duration}\nConsecutive failures: {consecutive_failures}\nError: {detail}"
                 )
             }
         };
@@ -264,14 +264,14 @@ impl TelegramBot {
         match monitor.recover_and_probe().await {
             RecoveryOutcome::Recovered { probe } => {
                 self.send_message(&format!(
-                    "OpenWrt WAN6 已恢复，本地 IPv6 检测成功，退出码 {:?}。",
+                    "OpenWrt WAN6 recovered. Local IPv6 check succeeded with exit code {:?}.",
                     probe.exit_code
                 ))
                 .await?;
             }
             RecoveryOutcome::RecoverCommandFailed { error, stderr } => {
                 self.send_message(&format!(
-                    "OpenWrt WAN6 恢复失败：{} {}",
+                    "OpenWrt WAN6 recovery failed: {} {}",
                     error.unwrap_or_default(),
                     stderr
                 ))
@@ -281,8 +281,10 @@ impl TelegramBot {
                 let detail = error
                     .or_else(|| probe.map(|p| p.stderr))
                     .unwrap_or_default();
-                self.send_message(&format!("恢复后本地 IPv6 检测仍失败：{detail}"))
-                    .await?;
+                self.send_message(&format!(
+                    "Local IPv6 check still failed after recovery: {detail}"
+                ))
+                .await?;
             }
         }
         Ok(())

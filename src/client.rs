@@ -5,7 +5,8 @@ use thiserror::Error;
 use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 use tracing::{error, info, warn};
 
-use crate::config::{OpenWrtConfig, PROBE_REMOTE_COMMAND, RECOVER_REMOTE_COMMAND};
+use crate::config::{OpenWrtConfig, RECOVER_REMOTE_COMMAND};
+use crate::local_probe::LocalProbeClient;
 
 const INSTALL_WRAPPER_REMOTE_COMMAND: &str =
     "mkdir -p /usr/local/sbin && cat > /usr/local/sbin/ipv6-watch-ssh-command && chmod 755 /usr/local/sbin/ipv6-watch-ssh-command";
@@ -39,20 +40,62 @@ pub enum ClientError {
     CommandTimeout(u64),
     #[error("SSH password environment variable is not set: {0}")]
     PasswordEnvMissing(String),
+    #[error("local DNS query failed: {0}")]
+    LocalDns(String),
+    #[error("failed to start local IPv6 ping: {0}")]
+    LocalPingSpawn(String),
+    #[error("local IPv6 ping timed out after {0} seconds")]
+    LocalPingTimeout(u64),
     #[error("failed to start ssh: {0}")]
     Spawn(#[from] std::io::Error),
 }
 
 #[async_trait]
-pub trait OpenWrtClient: Send + Sync {
+pub trait Ipv6Probe: Send + Sync {
     async fn check_ipv6(&self) -> Result<ProbeResult, ClientError>;
+}
+
+#[async_trait]
+pub trait Wan6Recovery: Send + Sync {
     async fn recover_wan6(&self) -> Result<CommandResult, ClientError>;
 }
+
+pub trait OpenWrtClient: Ipv6Probe + Wan6Recovery {}
+
+impl<T> OpenWrtClient for T where T: Ipv6Probe + Wan6Recovery {}
 
 #[derive(Debug, Clone)]
 pub struct SystemOpenWrtClient {
     config: OpenWrtConfig,
     ssh_program: OsString,
+}
+
+pub struct WatchClient {
+    local_probe: LocalProbeClient,
+    recovery: SystemOpenWrtClient,
+}
+
+impl WatchClient {
+    pub fn new(local_probe: LocalProbeClient, recovery: SystemOpenWrtClient) -> Self {
+        Self {
+            local_probe,
+            recovery,
+        }
+    }
+}
+
+#[async_trait]
+impl Ipv6Probe for WatchClient {
+    async fn check_ipv6(&self) -> Result<ProbeResult, ClientError> {
+        self.local_probe.check_ipv6().await
+    }
+}
+
+#[async_trait]
+impl Wan6Recovery for WatchClient {
+    async fn recover_wan6(&self) -> Result<CommandResult, ClientError> {
+        self.recovery.recover_wan6().await
+    }
 }
 
 impl SystemOpenWrtClient {
@@ -64,11 +107,6 @@ impl SystemOpenWrtClient {
         config: OpenWrtConfig,
         ssh_program: impl Into<OsString>,
     ) -> Result<Self, crate::config::ConfigError> {
-        if config.probe_remote_command != PROBE_REMOTE_COMMAND {
-            return Err(crate::config::ConfigError::Invalid(
-                "probe_remote_command must be exactly `probe`".into(),
-            ));
-        }
         if config.recover_remote_command != RECOVER_REMOTE_COMMAND {
             return Err(crate::config::ConfigError::Invalid(
                 "recover_remote_command must be exactly `recover`".into(),
@@ -215,21 +253,7 @@ impl SystemOpenWrtClient {
 }
 
 #[async_trait]
-impl OpenWrtClient for SystemOpenWrtClient {
-    async fn check_ipv6(&self) -> Result<ProbeResult, ClientError> {
-        let result = self.run(PROBE_REMOTE_COMMAND).await?;
-        if !result.success {
-            warn!(exit_code = ?result.exit_code, stderr = %result.stderr, "remote IPv6 probe failed");
-        }
-        Ok(ProbeResult {
-            success: result.success,
-            exit_code: result.exit_code,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            duration: result.duration,
-        })
-    }
-
+impl Wan6Recovery for SystemOpenWrtClient {
     async fn recover_wan6(&self) -> Result<CommandResult, ClientError> {
         self.run(RECOVER_REMOTE_COMMAND).await
     }
@@ -262,7 +286,6 @@ mod tests {
             install_wrapper_on_startup: false,
             connect_timeout_seconds: 10,
             command_timeout_seconds: timeout_seconds,
-            probe_remote_command: "probe".into(),
             recover_remote_command: "recover".into(),
         }
     }
@@ -290,10 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn bundled_wrapper_probes_from_the_lan_bridge() {
-        assert!(WRAPPER_SCRIPT.contains("ip -6 -o addr show dev br-lan scope global"));
-        assert!(WRAPPER_SCRIPT.contains("ping6 -I \"$lan_source\" -c 1 -W 3 openwrt.org"));
-        assert!(!WRAPPER_SCRIPT.contains("ping6 -I br-lan -c 1 -W 3 openwrt.org"));
+    fn bundled_wrapper_does_not_run_the_ipv6_probe() {
+        assert!(WRAPPER_SCRIPT.contains("\"recover\""));
+        assert!(!WRAPPER_SCRIPT.contains("ping6"));
     }
 
     #[test]
@@ -303,44 +325,9 @@ mod tests {
         let client = SystemOpenWrtClient::new_with_ssh_program(openwrt, "ssh").unwrap();
 
         assert_eq!(
-            client.runtime_remote_command(PROBE_REMOTE_COMMAND),
-            "SSH_ORIGINAL_COMMAND=probe exec /usr/local/sbin/ipv6-watch-ssh-command"
-        );
-        assert_eq!(
             client.runtime_remote_command(RECOVER_REMOTE_COMMAND),
             "SSH_ORIGINAL_COMMAND=recover exec /usr/local/sbin/ipv6-watch-ssh-command"
         );
-    }
-
-    #[tokio::test]
-    async fn check_ipv6_sends_only_fixed_probe_remote_command() {
-        let temp = TempDir::new().unwrap();
-        let log = temp.path().join("commands");
-        let ssh = fake_ssh(&temp, &last_argument_script(&log, "remote probe output"));
-        let client = SystemOpenWrtClient::new_with_ssh_program(config(10), ssh).unwrap();
-
-        let result = client.check_ipv6().await.unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.exit_code, Some(0));
-        assert_eq!(fs::read_to_string(log).unwrap(), "probe\n");
-        assert!(!result.stdout.contains("ping6"));
-    }
-
-    #[tokio::test]
-    async fn remote_nonzero_exit_is_a_failed_probe() {
-        let temp = TempDir::new().unwrap();
-        let ssh = fake_ssh(
-            &temp,
-            "printf '%s' 'ping6: network unreachable' >&2; exit 1",
-        );
-        let client = SystemOpenWrtClient::new_with_ssh_program(config(10), ssh).unwrap();
-
-        let result = client.check_ipv6().await.unwrap();
-
-        assert!(!result.success);
-        assert_eq!(result.exit_code, Some(1));
-        assert!(result.stderr.contains("network unreachable"));
     }
 
     #[tokio::test]
@@ -349,7 +336,7 @@ mod tests {
         let ssh = fake_ssh(&temp, "printf '%s' 'Connection refused' >&2; exit 255");
         let client = SystemOpenWrtClient::new_with_ssh_program(config(10), ssh).unwrap();
         assert!(matches!(
-            client.check_ipv6().await,
+            client.recover_wan6().await,
             Err(ClientError::SshConnection(_))
         ));
 
@@ -359,7 +346,7 @@ mod tests {
         );
         let client = SystemOpenWrtClient::new_with_ssh_program(config(10), ssh).unwrap();
         assert!(matches!(
-            client.check_ipv6().await,
+            client.recover_wan6().await,
             Err(ClientError::HostKeyVerification(_))
         ));
     }
@@ -371,7 +358,7 @@ mod tests {
         let client = SystemOpenWrtClient::new_with_ssh_program(config(1), ssh).unwrap();
 
         assert!(matches!(
-            client.check_ipv6().await,
+            client.recover_wan6().await,
             Err(ClientError::CommandTimeout(1))
         ));
     }
@@ -400,7 +387,7 @@ mod tests {
         let client = SystemOpenWrtClient::new_with_ssh_program(openwrt, ssh).unwrap();
 
         assert!(matches!(
-            client.check_ipv6().await,
+            client.recover_wan6().await,
             Err(ClientError::PasswordEnvMissing(name))
                 if name == "OPENWRT_IPV6_WATCH_TEST_MISSING"
         ));

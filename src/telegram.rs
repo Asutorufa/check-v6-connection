@@ -229,8 +229,8 @@ impl TelegramBot {
         C: OpenWrtClient + 'static,
     {
         let text = match monitor.tick().await {
-            MonitorEvent::Healthy(probe) => format!(
-                "OpenWrt IPv6 状态：正常\n检测位置：OpenWrt 远端\n命令：probe\n退出码：{:?}\n耗时：{} ms",
+            MonitorEvent::Healthy { probe, .. } => format!(
+                "本地 IPv6 状态：正常\n检测位置：Linux 指定网口\n命令：本地 DNS + ping6（不存在时使用 ping -6）\n退出码：{:?}\n耗时：{} ms",
                 probe.exit_code,
                 probe.duration.as_millis()
             ),
@@ -250,7 +250,7 @@ impl TelegramBot {
                     .unwrap_or_else(|| ("N/A".into(), "N/A".into(), String::new()));
                 let detail = error.unwrap_or(stderr);
                 format!(
-                    "OpenWrt IPv6 状态：失败\n检测位置：OpenWrt 远端\n命令：probe\n退出码：{exit_code}\n耗时：{duration}\n连续失败：{consecutive_failures}\n错误：{detail}"
+                    "本地 IPv6 状态：失败\n检测位置：Linux 指定网口\n命令：本地 DNS + ping6（不存在时使用 ping -6）\n退出码：{exit_code}\n耗时：{duration}\n连续失败：{consecutive_failures}\n错误：{detail}"
                 )
             }
         };
@@ -264,7 +264,7 @@ impl TelegramBot {
         match monitor.recover_and_probe().await {
             RecoveryOutcome::Recovered { probe } => {
                 self.send_message(&format!(
-                    "OpenWrt IPv6 已恢复，远端 probe 退出码 {:?}。",
+                    "OpenWrt WAN6 已恢复，本地 IPv6 检测成功，退出码 {:?}。",
                     probe.exit_code
                 ))
                 .await?;
@@ -281,7 +281,7 @@ impl TelegramBot {
                 let detail = error
                     .or_else(|| probe.map(|p| p.stderr))
                     .unwrap_or_default();
-                self.send_message(&format!("恢复后远端 IPv6 检测仍失败：{detail}"))
+                self.send_message(&format!("恢复后本地 IPv6 检测仍失败：{detail}"))
                     .await?;
             }
         }

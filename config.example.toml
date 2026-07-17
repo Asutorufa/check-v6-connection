@@ -15,6 +15,15 @@ connect_timeout_seconds = 10
 request_timeout_seconds = 35
 poll_timeout_seconds = 20
 
+[probe]
+# Interface on the Linux host/container, for example eth0, ens18, or wan.
+interface = "eth0"
+# Use an explicit DNS server so the system resolver/TUN DNS is not used.
+# IPv4 DNS is fine; the query itself asks for an AAAA record.
+dns_server = "1.1.1.1:53"
+dns_timeout_seconds = 3
+ping_timeout_seconds = 3
+
 [openwrt]
 host = "192.168.1.1"
 port = 22
@@ -28,5 +37,4 @@ install_wrapper_on_startup = true
 known_hosts = "/etc/openwrt-ipv6-watch/known_hosts"
 connect_timeout_seconds = 10
 command_timeout_seconds = 10
-probe_remote_command = "probe"
 recover_remote_command = "recover"

@@ -1,8 +1,10 @@
 # OpenWrt IPv6 Watch
 
-This service runs on a remote Linux host and performs IPv6 checks only through SSH on OpenWrt.
+This service runs on a Linux host and performs the IPv6 probe locally. SSH is used only for the optional OpenWrt WAN6 recovery operation and wrapper provisioning.
 
-The local process never starts `ping6` or `ifup wan6`. On startup, it can use the system `ssh` executable to write the fixed OpenWrt wrapper through SSH stdin; it does not use `scp`. After provisioning, it sends only the fixed remote commands `probe` and `recover`. The OpenWrt wrapper selects the current non-deprecated global IPv6 address on `br-lan` as the ping source, while leaving route selection to the system so the packet can still leave through WAN.
+The local probe uses an explicit Linux interface for both DNS and IPv6 ping. DNS is queried with a socket bound to that interface, and `ping6` is invoked with the same interface. If `ping6` is unavailable, it falls back to `ping -6`. This avoids the default resolver and route being redirected through a TUN/proxy interface. The probe target remains fixed as `openwrt.org`; Telegram input cannot change it.
+
+On startup, the program can still use the system `ssh` executable to write the fixed OpenWrt wrapper through SSH stdin; it does not use `scp`. The wrapper is only needed for the remote `recover` operation.
 
 When `install_wrapper_on_startup = true`, the program writes `/usr/local/sbin/ipv6-watch-ssh-command` through SSH and applies mode `0755` automatically. The startup SSH account must temporarily be able to execute the fixed remote installation command. A key already restricted with `command="..."` cannot perform this bootstrap step; after installing the wrapper, set `install_wrapper_on_startup = false` and use the restricted key:
 
@@ -15,11 +17,11 @@ For Dropbear, use the supported equivalent `command="..."` restriction and verif
 When the Telegram polling loop starts, the bot registers these commands with Telegram:
 
 ```text
-/status   获取 OpenWrt IPv6 当前状态，并通过 SSH 执行一次远端 probe
-/recover  通过 SSH 在 OpenWrt 执行 recover，等待后再次执行远端 probe
+/status   获取本地指定网口的 IPv6 状态，并执行一次本地 DNS + IPv6 ping
+/recover  通过 SSH 在 OpenWrt 执行 recover，等待后再次执行本地检测
 ```
 
-Both commands require a configured `allowed_user_ids` user and the configured `chat_id`. `/status` reports the remote exit code, duration, and stderr when the OpenWrt probe fails.
+Both commands require a configured `allowed_user_ids` user and the configured `chat_id`. `/status` reports the local ping exit code, duration, and stderr when the probe fails. The monitor sends a failure notification after `failure_threshold` consecutive failures, repeats it at `reminder_interval_seconds`, and sends a recovery notification after `recovery_success_threshold` consecutive successes.
 
 ## Linux deployment
 
@@ -63,7 +65,7 @@ sudo chown root:root /etc/openwrt-ipv6-watch/telegram.env
 sudo chmod 0600 /etc/openwrt-ipv6-watch/telegram.env
 ```
 
-Edit `/etc/openwrt-ipv6-watch/config.toml`, especially `host`, `chat_id`, `allowed_user_ids`, SSH key paths, and the fixed command values `probe`/`recover`. Telegram uses an explicit 10-second connection timeout and a 35-second HTTP request timeout around the default 20-second long poll. Keep `request_timeout_seconds` greater than `poll_timeout_seconds`.
+Edit `/etc/openwrt-ipv6-watch/config.toml`, especially `probe.interface`, `probe.dns_server`, `chat_id`, `allowed_user_ids`, SSH key paths, and the fixed command values `probe`/`recover`. Telegram uses an explicit 10-second connection timeout and a 35-second HTTP request timeout around the default 20-second long poll. Keep `request_timeout_seconds` greater than `poll_timeout_seconds`.
 
 Install and start the unit:
 
@@ -138,6 +140,8 @@ Run the container:
 docker run -d \
   --name openwrt-ipv6-watch \
   --restart unless-stopped \
+  --network host \
+  --cap-add NET_RAW \
   --env-file /etc/openwrt-ipv6-watch/telegram.env \
   -v /etc/openwrt-ipv6-watch:/etc/openwrt-ipv6-watch:ro \
   ghcr.io/OWNER/REPOSITORY:latest
@@ -149,6 +153,6 @@ Check its logs:
 docker logs -f openwrt-ipv6-watch
 ```
 
-The Docker image contains `openssh-client` and `sshpass`. Password mode first writes the fixed wrapper through SSH, then invokes that wrapper with fixed `probe`/`recover` values; the password is passed to `sshpass` through `SSHPASS`, never as a command-line argument. SSH key authentication with the OpenWrt forced-command key remains the safer option. If password authentication is enabled for `root`, configure OpenWrt separately so that this account cannot obtain an unrestricted interactive shell. For an already-installed forced-command key, set `install_wrapper_on_startup = false`.
+The Docker image contains `iputils-ping`, `openssh-client`, and `sshpass`. `--network host` exposes the host interfaces inside the container, and `CAP_NET_RAW` permits interface-bound DNS sockets and ICMPv6. Password mode first writes the fixed wrapper through SSH, then uses SSH only for fixed `recover`; the password is passed to `sshpass` through `SSHPASS`, never as a command-line argument. SSH key authentication with the OpenWrt forced-command key remains the safer option. If password authentication is enabled for `root`, configure OpenWrt separately so that this account cannot obtain an unrestricted interactive shell. For an already-installed forced-command key, set `install_wrapper_on_startup = false`.
 
-The `probe_remote_command` and `recover_remote_command` settings are validated at startup and must be exactly `probe` and `recover`.
+The local probe target is fixed as `openwrt.org`. The `recover_remote_command` setting is validated at startup and must be exactly `recover`.

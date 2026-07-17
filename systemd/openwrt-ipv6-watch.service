@@ -14,6 +14,8 @@ Restart=on-failure
 RestartSec=5s
 
 NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
 PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true

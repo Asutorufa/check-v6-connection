@@ -9,7 +9,10 @@ use crate::config::MonitorConfig;
 
 #[derive(Debug, Clone)]
 pub enum MonitorEvent {
-    Healthy(ProbeResult),
+    Healthy {
+        probe: ProbeResult,
+        consecutive_successes: u32,
+    },
     Failed {
         consecutive_failures: u32,
         error: Option<String>,
@@ -68,8 +71,11 @@ impl<C: OpenWrtClient> Monitor<C> {
                 state.consecutive_failures = 0;
                 state.consecutive_recovery_successes =
                     state.consecutive_recovery_successes.saturating_add(1);
-                info!("OpenWrt remote IPv6 probe is healthy");
-                MonitorEvent::Healthy(probe)
+                info!("local IPv6 probe is healthy");
+                MonitorEvent::Healthy {
+                    probe,
+                    consecutive_successes: state.consecutive_recovery_successes,
+                }
             }
             Ok(probe) => {
                 let mut state = self.state.lock().await;
@@ -77,7 +83,7 @@ impl<C: OpenWrtClient> Monitor<C> {
                 state.consecutive_recovery_successes = 0;
                 warn!(
                     consecutive_failures = state.consecutive_failures,
-                    "OpenWrt remote IPv6 probe failed"
+                    "local IPv6 probe failed"
                 );
                 MonitorEvent::Failed {
                     consecutive_failures: state.consecutive_failures,
@@ -92,7 +98,7 @@ impl<C: OpenWrtClient> Monitor<C> {
                 warn!(
                     consecutive_failures = state.consecutive_failures,
                     error = %error,
-                    "OpenWrt remote IPv6 probe could not be completed"
+                    "local IPv6 probe could not be completed"
                 );
                 MonitorEvent::Failed {
                     consecutive_failures: state.consecutive_failures,
@@ -121,7 +127,7 @@ impl<C: OpenWrtClient> Monitor<C> {
         };
         info!(
             exit_code = ?recovery.exit_code,
-            "remote WAN6 recovery completed; waiting before remote probe"
+            "remote WAN6 recovery completed; waiting before local probe"
         );
         tokio::time::sleep(Duration::from_secs(self.config.recovery_wait_seconds)).await;
 
@@ -145,6 +151,10 @@ impl<C: OpenWrtClient> Monitor<C> {
     pub fn recovery_success_threshold(&self) -> u32 {
         self.config.recovery_success_threshold
     }
+
+    pub fn reminder_interval(&self) -> Duration {
+        Duration::from_secs(self.config.reminder_interval_seconds)
+    }
 }
 
 impl From<ClientError> for MonitorEvent {
@@ -164,14 +174,14 @@ mod tests {
 
     use async_trait::async_trait;
 
-    use crate::client::CommandResult;
+    use crate::client::{CommandResult, Ipv6Probe, Wan6Recovery};
 
     struct RecordingClient {
         calls: StdMutex<Vec<&'static str>>,
     }
 
     #[async_trait]
-    impl OpenWrtClient for RecordingClient {
+    impl Ipv6Probe for RecordingClient {
         async fn check_ipv6(&self) -> Result<ProbeResult, ClientError> {
             self.calls.lock().unwrap().push("probe");
             Ok(ProbeResult {
@@ -182,7 +192,10 @@ mod tests {
                 duration: Duration::from_millis(1),
             })
         }
+    }
 
+    #[async_trait]
+    impl Wan6Recovery for RecordingClient {
         async fn recover_wan6(&self) -> Result<CommandResult, ClientError> {
             self.calls.lock().unwrap().push("recover");
             Ok(CommandResult {
@@ -207,7 +220,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_is_followed_by_a_remote_probe() {
+    async fn recovery_is_followed_by_a_local_probe() {
         let client = Arc::new(RecordingClient {
             calls: StdMutex::new(Vec::new()),
         });

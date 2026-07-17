@@ -3,14 +3,25 @@ use std::{fs, path::Path};
 use serde::Deserialize;
 use thiserror::Error;
 
-pub const PROBE_REMOTE_COMMAND: &str = "probe";
 pub const RECOVER_REMOTE_COMMAND: &str = "recover";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub monitor: MonitorConfig,
     pub telegram: TelegramConfig,
+    pub probe: ProbeConfig,
     pub openwrt: OpenWrtConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProbeConfig {
+    pub interface: String,
+    #[serde(default = "default_dns_server")]
+    pub dns_server: String,
+    #[serde(default = "default_probe_timeout_seconds")]
+    pub dns_timeout_seconds: u64,
+    #[serde(default = "default_probe_timeout_seconds")]
+    pub ping_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,8 +62,6 @@ pub struct OpenWrtConfig {
     pub install_wrapper_on_startup: bool,
     pub connect_timeout_seconds: u64,
     pub command_timeout_seconds: u64,
-    #[serde(default = "default_probe_command")]
-    pub probe_remote_command: String,
     #[serde(default = "default_recover_command")]
     pub recover_remote_command: String,
 }
@@ -61,16 +70,20 @@ fn default_ssh_port() -> u16 {
     22
 }
 
-fn default_probe_command() -> String {
-    PROBE_REMOTE_COMMAND.to_owned()
-}
-
 fn default_recover_command() -> String {
     RECOVER_REMOTE_COMMAND.to_owned()
 }
 
 fn default_install_wrapper_on_startup() -> bool {
     true
+}
+
+fn default_dns_server() -> String {
+    "1.1.1.1:53".to_owned()
+}
+
+fn default_probe_timeout_seconds() -> u64 {
+    3
 }
 
 fn default_telegram_connect_timeout_seconds() -> u64 {
@@ -135,11 +148,6 @@ impl Config {
                 "SSH timeouts must be greater than zero".into(),
             ));
         }
-        if o.probe_remote_command != PROBE_REMOTE_COMMAND {
-            return Err(ConfigError::Invalid(
-                "probe_remote_command must be exactly `probe`".into(),
-            ));
-        }
         if o.recover_remote_command != RECOVER_REMOTE_COMMAND {
             return Err(ConfigError::Invalid(
                 "recover_remote_command must be exactly `recover`".into(),
@@ -171,6 +179,24 @@ impl Config {
                 "Telegram request timeout must be longer than the long-poll timeout".into(),
             ));
         }
+        if self.probe.interface.trim().is_empty() {
+            return Err(ConfigError::Invalid("probe interface is required".into()));
+        }
+        if self
+            .probe
+            .dns_server
+            .parse::<std::net::SocketAddr>()
+            .is_err()
+        {
+            return Err(ConfigError::Invalid(
+                "probe dns_server must be an IP address with port, for example 1.1.1.1:53".into(),
+            ));
+        }
+        if self.probe.dns_timeout_seconds == 0 || self.probe.ping_timeout_seconds == 0 {
+            return Err(ConfigError::Invalid(
+                "probe timeouts must be greater than zero".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -195,6 +221,12 @@ mod tests {
             chat_id = 1
             allowed_user_ids = [2]
 
+            [probe]
+            interface = "eth0"
+            dns_server = "1.1.1.1:53"
+            dns_timeout_seconds = 3
+            ping_timeout_seconds = 3
+
             [openwrt]
             host = "192.168.1.1"
             username = "root"
@@ -202,7 +234,6 @@ mod tests {
             known_hosts = "/known_hosts"
             connect_timeout_seconds = 10
             command_timeout_seconds = 10
-            probe_remote_command = "probe"
             recover_remote_command = "recover"
             "#,
         )
@@ -210,9 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_modified_remote_commands() {
+    fn rejects_modified_recover_command() {
         let mut c = config();
-        c.openwrt.probe_remote_command = "probe; id".into();
+        c.openwrt.recover_remote_command = "recover; id".into();
         assert!(c.validate().is_err());
     }
 

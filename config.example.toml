@@ -5,6 +5,13 @@ recovery_success_threshold = 2
 recovery_wait_seconds = 10
 reminder_interval_seconds = 1800
 incident_expire_seconds = 3600
+# Automatic WAN6 recovery is bounded per outage incident. After the maximum
+# number of attempts, the watcher keeps probing and reminding but stops SSH
+# recovery until IPv6 becomes healthy again.
+auto_recovery_enabled = true
+auto_recovery_max_attempts = 3
+auto_recovery_initial_backoff_seconds = 300
+auto_recovery_max_backoff_seconds = 3600
 
 [telegram]
 bot_token_env = "TELEGRAM_BOT_TOKEN"

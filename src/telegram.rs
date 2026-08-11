@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::{
     client::OpenWrtClient,
-    monitor::{Monitor, MonitorEvent, RecoveryOutcome},
+    monitor::{Monitor, RecoveryOutcome},
 };
 
 #[derive(Debug, Error)]
@@ -228,31 +228,21 @@ impl TelegramBot {
     where
         C: OpenWrtClient + 'static,
     {
-        let text = match monitor.tick().await {
-            MonitorEvent::Healthy { probe, .. } => format!(
+        let text = match monitor.probe_once().await {
+            Ok(probe) if probe.success => format!(
                 "Local IPv6 status: healthy\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nExit code: {:?}\nDuration: {} ms",
                 probe.exit_code,
                 probe.duration.as_millis()
             ),
-            MonitorEvent::Failed {
-                consecutive_failures,
-                error,
-                probe,
-            } => {
-                let (exit_code, duration, stderr) = probe
-                    .map(|probe| {
-                        (
-                            format!("{:?}", probe.exit_code),
-                            format!("{} ms", probe.duration.as_millis()),
-                            probe.stderr,
-                        )
-                    })
-                    .unwrap_or_else(|| ("N/A".into(), "N/A".into(), String::new()));
-                let detail = error.unwrap_or(stderr);
-                format!(
-                    "Local IPv6 status: failed\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nExit code: {exit_code}\nDuration: {duration}\nConsecutive failures: {consecutive_failures}\nError: {detail}"
-                )
-            }
+            Ok(probe) => format!(
+                "Local IPv6 status: failed\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nExit code: {:?}\nDuration: {} ms\nError: {}",
+                probe.exit_code,
+                probe.duration.as_millis(),
+                probe.stderr.trim()
+            ),
+            Err(error) => format!(
+                "Local IPv6 status: failed\nInterface: configured Linux interface\nProbe: interface-bound DNS + ping6 (falls back to ping -6)\nError: {error}"
+            ),
         };
         self.send_message(&text).await
     }
@@ -261,7 +251,14 @@ impl TelegramBot {
     where
         C: OpenWrtClient + 'static,
     {
-        match monitor.recover_and_probe().await {
+        let Some(outcome) = monitor.try_recover_and_probe().await else {
+            self.send_message(
+                "OpenWrt WAN6 recovery is already in progress; no new recovery was started.",
+            )
+            .await?;
+            return Ok(());
+        };
+        match outcome {
             RecoveryOutcome::Recovered { probe } => {
                 self.send_message(&format!(
                     "OpenWrt WAN6 recovered. Local IPv6 check succeeded with exit code {:?}.",

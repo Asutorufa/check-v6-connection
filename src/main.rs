@@ -4,7 +4,7 @@ use openwrt_ipv6_watch::{
     client::{ProbeResult, SystemOpenWrtClient, WatchClient},
     config::Config,
     local_probe::LocalProbeClient,
-    monitor::{Monitor, MonitorEvent},
+    monitor::{AutoRecoveryOutcome, Monitor, MonitorEvent, RecoveryOutcome},
     telegram::TelegramBot,
 };
 use tracing::{error, info, warn};
@@ -15,6 +15,28 @@ fn failure_detail(error: Option<&String>, probe: Option<&ProbeResult>) -> String
         .or_else(|| probe.map(|probe| probe.stderr.trim()))
         .filter(|detail| !detail.is_empty())
         .unwrap_or("no detailed error");
+    detail.chars().take(1000).collect()
+}
+
+fn recovery_outcome_detail(outcome: &RecoveryOutcome) -> String {
+    let detail = match outcome {
+        RecoveryOutcome::Recovered { probe } => format!(
+            "WAN6 recovery command succeeded and the local IPv6 probe succeeded (exit code {:?}). The monitor will continue checking for stable recovery.",
+            probe.exit_code
+        ),
+        RecoveryOutcome::RecoverCommandFailed { error, stderr } => format!(
+            "WAN6 recovery command failed. {} {}",
+            error.as_deref().unwrap_or("no command error"),
+            stderr.trim()
+        ),
+        RecoveryOutcome::ProbeFailed { error, probe } => format!(
+            "WAN6 recovery command completed, but the local IPv6 probe still failed. {}",
+            error
+                .as_deref()
+                .or_else(|| probe.as_ref().map(|probe| probe.stderr.trim()))
+                .unwrap_or("no probe error")
+        ),
+    };
     detail.chars().take(1000).collect()
 }
 
@@ -75,13 +97,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match bot.send_message(&message).await {
                                 Ok(()) => {
                                     info!("sent IPv6 recovery notification to Telegram");
-                                    incident_active = false;
-                                    last_failure_notification = None;
                                 }
                                 Err(error) => {
                                     warn!(%error, "failed to send IPv6 recovery notification to Telegram")
                                 }
                             }
+                            incident_active = false;
+                            last_failure_notification = None;
                         }
                     }
                     MonitorEvent::Failed {
@@ -98,8 +120,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let reminder_due = last_failure_notification
                             .map(|sent| sent.elapsed() >= monitor.reminder_interval())
                             .unwrap_or(true);
+                        let incident_started =
+                            consecutive_failures >= monitor.failure_threshold() && !incident_active;
+                        if incident_started {
+                            incident_active = true;
+                            last_failure_notification = None;
+                        }
                         if consecutive_failures >= monitor.failure_threshold()
-                            && (!incident_active || reminder_due)
+                            && (incident_started || reminder_due)
                         {
                             let message = format!(
                                 "Local IPv6 connectivity check failed. Consecutive failures: {consecutive_failures}\nError: {}",
@@ -108,12 +136,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match bot.send_message(&message).await {
                                 Ok(()) => {
                                     warn!("sent IPv6 failure notification to Telegram");
-                                    incident_active = true;
-                                    last_failure_notification = Some(tokio::time::Instant::now());
                                 }
                                 Err(error) => {
                                     warn!(%error, "failed to send IPv6 failure notification to Telegram")
                                 }
+                            }
+                            last_failure_notification = Some(tokio::time::Instant::now());
+                        }
+
+                        if incident_active {
+                            let start_bot = Arc::clone(&bot);
+                            match monitor
+                                .auto_recover_if_due_with_hook(move |attempt| {
+                                    let bot = Arc::clone(&start_bot);
+                                    async move {
+                                        let message = format!(
+                                            "Starting automatic IPv6 recovery attempt {attempt}."
+                                        );
+                                        if let Err(error) = bot.send_message(&message).await {
+                                            warn!(%error, attempt, "failed to send automatic recovery start notification");
+                                        }
+                                    }
+                                })
+                                .await
+                            {
+                                AutoRecoveryOutcome::Attempted { attempt, outcome } => {
+                                    let message = format!(
+                                        "Automatic IPv6 recovery attempt {attempt} completed.\n{}",
+                                        recovery_outcome_detail(&outcome)
+                                    );
+                                    if let Err(error) = bot.send_message(&message).await {
+                                        warn!(%error, attempt, "failed to send automatic recovery result notification");
+                                    }
+                                }
+                                AutoRecoveryOutcome::Suppressed { attempts } => {
+                                    let message = format!(
+                                        "Automatic IPv6 recovery is now paused after {attempts} failed attempts. The watcher will continue passive checks and reminders; manual recovery is required if the ISP remains unavailable."
+                                    );
+                                    if let Err(error) = bot.send_message(&message).await {
+                                        warn!(%error, attempts, "failed to send automatic recovery suppression notification");
+                                    }
+                                }
+                                AutoRecoveryOutcome::NotDue | AutoRecoveryOutcome::InProgress => {}
                             }
                         }
                     }

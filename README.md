@@ -23,6 +23,8 @@ When the Telegram polling loop starts, the bot registers these commands with Tel
 
 Both commands require a configured `allowed_user_ids` user and the configured `chat_id`. `/status` reports the local ping exit code, duration, and stderr when the probe fails. The monitor sends a failure notification after `failure_threshold` consecutive failures, repeats it at `reminder_interval_seconds`, and sends a recovery notification after `recovery_success_threshold` consecutive successes.
 
+Automatic recovery is enabled by default and is bounded per outage incident. The first recovery runs when the failure threshold is reached; later attempts use exponential backoff, capped by `auto_recovery_max_backoff_seconds`. After `auto_recovery_max_attempts`, SSH recovery is paused while passive probes and failure reminders continue. Each automatic attempt sends Telegram start and completion notifications, and a stable sequence of successful probes closes the incident and resets the attempt budget. A manual `/recover` never runs concurrently with an automatic recovery.
+
 ## Linux deployment
 
 The repository includes a systemd unit at [`systemd/openwrt-ipv6-watch.service`](systemd/openwrt-ipv6-watch.service).

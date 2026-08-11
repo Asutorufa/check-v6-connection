@@ -32,6 +32,14 @@ pub struct MonitorConfig {
     pub recovery_wait_seconds: u64,
     pub reminder_interval_seconds: u64,
     pub incident_expire_seconds: u64,
+    #[serde(default = "default_auto_recovery_enabled")]
+    pub auto_recovery_enabled: bool,
+    #[serde(default = "default_auto_recovery_max_attempts")]
+    pub auto_recovery_max_attempts: u32,
+    #[serde(default = "default_auto_recovery_initial_backoff_seconds")]
+    pub auto_recovery_initial_backoff_seconds: u64,
+    #[serde(default = "default_auto_recovery_max_backoff_seconds")]
+    pub auto_recovery_max_backoff_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +106,22 @@ fn default_telegram_poll_timeout_seconds() -> u64 {
     20
 }
 
+fn default_auto_recovery_enabled() -> bool {
+    true
+}
+
+fn default_auto_recovery_max_attempts() -> u32 {
+    3
+}
+
+fn default_auto_recovery_initial_backoff_seconds() -> u64 {
+    300
+}
+
+fn default_auto_recovery_max_backoff_seconds() -> u64 {
+    3600
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config: {0}")]
@@ -156,9 +180,27 @@ impl Config {
         if self.monitor.interval_seconds == 0
             || self.monitor.failure_threshold == 0
             || self.monitor.recovery_success_threshold == 0
+            || self.monitor.incident_expire_seconds == 0
         {
             return Err(ConfigError::Invalid(
-                "monitor interval and thresholds must be greater than zero".into(),
+                "monitor interval, thresholds, and incident expiry must be greater than zero"
+                    .into(),
+            ));
+        }
+        if self.monitor.auto_recovery_enabled
+            && (self.monitor.auto_recovery_max_attempts == 0
+                || self.monitor.auto_recovery_initial_backoff_seconds == 0
+                || self.monitor.auto_recovery_max_backoff_seconds == 0)
+        {
+            return Err(ConfigError::Invalid(
+                "enabled auto recovery requires positive attempt and backoff limits".into(),
+            ));
+        }
+        if self.monitor.auto_recovery_max_backoff_seconds
+            < self.monitor.auto_recovery_initial_backoff_seconds
+        {
+            return Err(ConfigError::Invalid(
+                "auto recovery max backoff must not be shorter than its initial backoff".into(),
             ));
         }
         if self.telegram.bot_token_env.trim().is_empty() {
@@ -253,7 +295,19 @@ mod tests {
         assert_eq!(c.telegram.connect_timeout_seconds, 10);
         assert_eq!(c.telegram.poll_timeout_seconds, 20);
         assert_eq!(c.telegram.request_timeout_seconds, 35);
+        assert!(c.monitor.auto_recovery_enabled);
+        assert_eq!(c.monitor.auto_recovery_max_attempts, 3);
+        assert_eq!(c.monitor.auto_recovery_initial_backoff_seconds, 300);
+        assert_eq!(c.monitor.auto_recovery_max_backoff_seconds, 3600);
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_auto_recovery_max_backoff_shorter_than_initial_backoff() {
+        let mut c = config();
+        c.monitor.auto_recovery_initial_backoff_seconds = 600;
+        c.monitor.auto_recovery_max_backoff_seconds = 300;
+        assert!(c.validate().is_err());
     }
 
     #[test]
